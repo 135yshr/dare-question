@@ -26,6 +26,7 @@ const nameOf = id => players[id]?.nickname || "だれか";
 const perPerson = () => state?.perPerson || DEFAULT_PER;
 const qText = r => QMAP[r.q]?.q ?? "";
 const aText = r => QMAP[r.q]?.o[r.a] ?? "";
+const namesOf = ids => (ids || []).map(nameOf).join(" と ");
 
 function setHTML(html) {
   if (html === lastHTML) return;
@@ -73,11 +74,12 @@ function playerView() {
   if (state?.phase === "reveal" && r) {
     const picked = myVote?.round === r.id ? myVote.pick : null;
     let res;
-    if (r.subject === uid) res = `<div class="result ng">あなたの回答でした</div>`;
+    const subjects = r.subjects || [];
+    if (subjects.includes(uid)) res = `<div class="result ng">${subjects.length > 1 ? "あなたも同じ回答でした" : "あなたの回答でした"}</div>`;
     else if (!picked) res = `<div class="result ng">今回は投票なし</div>`;
-    else if (picked === r.subject) res = `<div class="result ok">正解！</div>`;
+    else if (subjects.includes(picked)) res = `<div class="result ok">正解！</div>`;
     else res = `<div class="result ng">ざんねん、${esc(nameOf(picked))} ではありませんでした</div>`;
-    return `<div class="wrap stack">${badge("正解は…", "", `<div class="badge-name hand">${esc(nameOf(r.subject))}</div>`)}${res}
+    return `<div class="wrap stack">${badge("正解は…", subjects.length > 1 ? "同じ回答の人が複数いました" : "", `<div class="badge-name hand">${esc(namesOf(subjects))}</div>`)}${res}
       <p class="muted">${esc(qText(r))} → ${esc(aText(r))}</p>${nick}</div>`;
   }
   if (state?.phase === "done") {
@@ -115,11 +117,23 @@ function registerView() {
 }
 
 /* ---------------- 司会画面 ---------------- */
-function remaining() {
-  const used = new Set(secret?.used || []); let n = 0;
-  for (const [id, a] of Object.entries(answers)) if (players[id]) (a.answers || []).forEach((_, i) => { if (!used.has(id + ":" + i)) n++; });
-  return n;
+// 登録者の回答を「質問:選んだ番号」ごとにまとめる。同じ回答の人は同じグループになる
+function answerGroups() {
+  const used = new Set(secret?.used || []); const groups = new Map();
+  for (const [id, a] of Object.entries(answers)) {
+    if (!players[id]) continue;
+    (a.answers || []).forEach((x, i) => {
+      const k = x.q + ":" + x.a;
+      if (!groups.has(k)) groups.set(k, { q: x.q, a: x.a, ids: [], keys: [], used: false });
+      const g = groups.get(k);
+      if (!g.ids.includes(id)) g.ids.push(id);
+      g.keys.push(id + ":" + i);
+      if (used.has(id + ":" + i)) g.used = true;
+    });
+  }
+  return [...groups.values()];
 }
+const remaining = () => answerGroups().filter(g => !g.used).length;
 function hostView() {
   if (authState === "loading") return loading;
   if (authState === "needLogin") return `<div class="wrap stack" style="max-width:560px">${badge("司会画面", "", `<p class="muted">司会として登録した Google アカウントでログインしてください。</p>`)}<button class="btn" id="login" style="width:100%">Google でログイン</button></div>`;
@@ -147,8 +161,8 @@ function hostView() {
         <div>${reset}</div></div></div></div>`;
   }
   if (phase === "question" && r) {
-    const voted = Object.entries(votes).filter(([id, v]) => v.round === r.id && id !== secret?.subject && players[id]).length;
-    const canVote = ids.filter(id => id !== secret?.subject).length;
+    const voted = Object.entries(votes).filter(([id, v]) => v.round === r.id && !secret?.subjects?.includes(id) && players[id]).length;
+    const canVote = ids.filter(id => !secret?.subjects?.includes(id)).length;
     return `<div class="wrap"><div class="host-grid">
       ${badge("この回答、だれの？", `第${state.roundNo}問`, `<p class="host-q">${esc(qText(r))}</p><p class="host-a">${esc(aText(r))}</p>`)}
       <div class="panel stack"><p class="muted">投票</p><div class="bigcount">${voted}<span style="font-size:32px" class="muted"> / ${canVote}</span></div>
@@ -156,15 +170,16 @@ function hostView() {
         <button class="btn" id="close">締め切って正解を発表</button></div></div></div>`;
   }
   if (phase === "reveal" && r) {
-    const vs = Object.entries(votes).filter(([id, v]) => v.round === r.id && id !== r.subject && players[id]);
+    const subjects = r.subjects || [];
+    const vs = Object.entries(votes).filter(([id, v]) => v.round === r.id && !subjects.includes(id) && players[id]);
     const tally = {}; vs.forEach(([, v]) => tally[v.pick] = (tally[v.pick] || 0) + 1);
     const max = Math.max(1, ...Object.values(tally));
-    const bars = r.options.map(id => `<div class="bar ${id === r.subject ? "hit" : ""}"><span class="who hand">${esc(nameOf(id))}</span><span class="track"><i style="width:${(tally[id] || 0) / max * 100}%"></i></span><span class="n">${tally[id] || 0}</span></div>`).join("");
-    const hits = vs.filter(([, v]) => v.pick === r.subject);
+    const bars = r.options.map(id => `<div class="bar ${subjects.includes(id) ? "hit" : ""}"><span class="who hand">${esc(nameOf(id))}</span><span class="track"><i style="width:${(tally[id] || 0) / max * 100}%"></i></span><span class="n">${tally[id] || 0}</span></div>`).join("");
+    const hits = vs.filter(([, v]) => subjects.includes(v.pick));
     const winners = hits.map(([id]) => `<span class="chip hand">${esc(nameOf(id))}</span>`).join("");
     const left = remaining();
     return `<div class="wrap"><div class="host-grid">
-      <div class="stack">${badge("正解は…", `${qText(r)} → ${aText(r)}`, `<div class="badge-name hand write-in">${esc(nameOf(r.subject))}</div>`)}
+      <div class="stack">${badge("正解は…", `${qText(r)} → ${aText(r)}`, `<div class="badge-name hand write-in">${esc(namesOf(subjects))}</div>${subjects.length > 1 ? `<p class="muted">同じ回答の人が複数いたので、全員が正解です</p>` : ""}`)}
         <div><h2 style="margin-bottom:10px">当てた人（${hits.length}人）</h2><div class="chips">${winners || `<p class="muted">だれも当てられませんでした</p>`}</div></div></div>
       <div class="panel stack"><h2>投票の内訳</h2><div class="bars">${bars}</div>
         <p class="note">残り ${left} 問</p>
@@ -186,33 +201,34 @@ async function patchState(patch) {
   await setDoc(stateRef(), { ...baseState(), ...(state || {}), ...patch });
 }
 function makeRound() {
-  const used = new Set(secret?.used || []); const pool = [];
-  for (const [id, a] of Object.entries(answers)) {
-    if (!players[id]) continue;
-    (a.answers || []).forEach((x, i) => { if (!used.has(id + ":" + i)) pool.push({ id, i, q: x.q, a: x.a }); });
-  }
+  const pool = answerGroups().filter(g => !g.used);
   if (!pool.length) return null;
-  const fresh = pool.filter(x => x.id !== secret?.subject);
-  const from = fresh.length ? fresh : pool;
+  // 同じ人が連続しないようにし、そのうえで回答がかぶっていないものを優先する
+  const last = secret?.subjects || [];
+  const fresh = pool.filter(g => !g.ids.some(id => last.includes(id)));
+  const base = fresh.length ? fresh : pool;
+  const unique = base.filter(g => g.ids.length === 1);
+  const from = unique.length ? unique : base;
   const pick = from[Math.floor(Math.random() * from.length)];
   const ids = Object.keys(players);
+  const main = pick.ids[Math.floor(Math.random() * pick.ids.length)];
   const options = ids.length <= ALL_CHOICES_MAX
     ? shuffle(ids)
-    : shuffle([pick.id, ...shuffle(ids.filter(x => x !== pick.id)).slice(0, 3)]);
+    : shuffle([main, ...shuffle(ids.filter(x => !pick.ids.includes(x))).slice(0, 3)]);
   const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-  return { round: { id, q: pick.q, a: pick.a, options }, subject: pick.id, key: pick.id + ":" + pick.i };
+  return { round: { id, q: pick.q, a: pick.a, options }, subjects: pick.ids, keys: pick.keys };
 }
 async function nextRound() {
   const m = makeRound();
   if (!m) { await patchState({ phase: "done", round: null }); return; }
   const b = writeBatch(db);
-  b.set(secretRef(), { subject: m.subject, used: [...(secret?.used || []), m.key] });
-  b.set(doc(db, "turns", m.subject), { round: m.round.id });
+  b.set(secretRef(), { subjects: m.subjects, used: [...(secret?.used || []), ...m.keys] });
+  m.subjects.forEach(id => b.set(doc(db, "turns", id), { round: m.round.id }));
   b.set(stateRef(), { ...baseState(), ...(state || {}), phase: "question", round: m.round, roundNo: (state?.roundNo || 0) + 1 });
   await b.commit();
 }
 async function reveal() {
-  await patchState({ phase: "reveal", round: { ...state.round, subject: secret.subject } });
+  await patchState({ phase: "reveal", round: { ...state.round, subjects: secret.subjects } });
 }
 async function resetAll() {
   if (!confirm("登録者・回答・投票をすべて消して最初からにします。よろしいですか？")) return;
@@ -224,7 +240,7 @@ async function resetAll() {
     const b = writeBatch(db); refs.slice(i, i + 400).forEach(r => b.delete(r)); await b.commit();
   }
   const b = writeBatch(db);
-  b.set(secretRef(), { subject: null, used: [] });
+  b.set(secretRef(), { subjects: [], used: [] });
   b.set(stateRef(), { phase: "lobby", perPerson: perPerson(), roundNo: 0, round: null });
   await b.commit();
 }

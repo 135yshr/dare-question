@@ -56,7 +56,7 @@ service cloud.firestore {
       allow write: if isHost();
     }
 
-    // 投票は本人と司会だけが読める。受付中の問題にだけ、出題された本人以外が投票できる
+    // 投票は本人と司会だけが読める。受付中の問題にだけ、出題された本人（同じ回答の人を含む）以外が投票できる
     match /votes/{uid} {
       allow read: if isHost() || isSelf(uid);
       allow create, update: if isSelf(uid)
@@ -64,7 +64,7 @@ service cloud.firestore {
         && gameState().phase == 'question'
         && request.resource.data.round == gameState().round.id
         && request.resource.data.pick in gameState().round.options
-        && gameSecret().subject != uid;
+        && !(uid in gameSecret().get('subjects', []));
       allow delete: if isHost();
     }
   }
