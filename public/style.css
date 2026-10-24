@@ -73,6 +73,9 @@ p{margin:0}
 .host-q{font-size:22px;color:var(--muted);font-weight:700}
 .host-a{font-size:44px;font-weight:900;line-height:1.35;margin-top:6px}
 .bigcount{font-size:72px;font-weight:900;line-height:1}
+.hints ol{margin:10px 0 0;padding-left:1.4em;display:grid;gap:10px}
+.hints li{font-size:22px;line-height:1.4}
+.hints li .muted{font-size:16px}
 .bars{display:grid;gap:10px}
 .bar{display:grid;grid-template-columns:minmax(0,9em) 1fr 2.5em;gap:10px;align-items:center;font-size:18px}
 .bar .n{text-align:right;font-weight:700}

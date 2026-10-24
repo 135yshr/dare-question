@@ -1,6 +1,6 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, onAuthStateChanged, signInAnonymously, GoogleAuthProvider, signInWithPopup, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { getFirestore, doc, collection, onSnapshot, getDoc, setDoc, writeBatch } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { getFirestore, doc, collection, onSnapshot, getDoc, setDoc, writeBatch, runTransaction } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { firebaseConfig } from "./firebase-config.js";
 import { QUESTIONS } from "./questions.js";
 
@@ -134,6 +134,16 @@ function answerGroups() {
   return [...groups.values()];
 }
 const remaining = () => answerGroups().filter(g => !g.used).length;
+// ヒント候補：ヒント元の人の回答のうち、まだ出題もヒントもしていないもの（同じ回答の人の分で使ったものも除く）
+function hintCandidates() {
+  const from = secret?.hintFrom; if (!from || !players[from]) return [];
+  const usedGroups = new Set(answerGroups().filter(g => g.used).map(g => g.q + ":" + g.a));
+  return (answers[from]?.answers || []).map((x, i) => ({ q: x.q, a: x.a, key: from + ":" + i })).filter(x => !usedGroups.has(x.q + ":" + x.a));
+}
+function hintsHTML() {
+  const hs = secret?.hints || []; if (!hs.length) return "";
+  return `<div class="panel hints"><h2>ヒント：この人はほかにこう答えています</h2><ol>${hs.map(h => `<li><span class="muted">${esc(QMAP[h.q]?.q)}</span><br><b>${esc(QMAP[h.q]?.o[h.a])}</b></li>`).join("")}</ol></div>`;
+}
 function hostView() {
   if (authState === "loading") return loading;
   if (authState === "needLogin") return `<div class="wrap stack" style="max-width:560px">${badge("司会画面", "", `<p class="muted">司会として登録した Google アカウントでログインしてください。</p>`)}<button class="btn" id="login" style="width:100%">Google でログイン</button></div>`;
@@ -164,10 +174,13 @@ function hostView() {
   if (phase === "question" && r) {
     const voted = Object.entries(votes).filter(([id, v]) => v.round === r.id && !secret?.subjects?.includes(id) && players[id]).length;
     const canVote = ids.filter(id => !secret?.subjects?.includes(id)).length;
+    const hintLeft = hintCandidates().length;
     return `<div class="wrap"><div class="host-grid">
-      ${badge("この回答、だれの？", `第${state.roundNo}問`, `<p class="host-q">${esc(qText(r))}</p><p class="host-a">${esc(aText(r))}</p>`)}
+      <div class="stack">${badge("この回答、だれの？", `第${state.roundNo}問`, `<p class="host-q">${esc(qText(r))}</p><p class="host-a">${esc(aText(r))}</p>`)}${hintsHTML()}</div>
       <div class="panel stack"><p class="muted">投票</p><div class="bigcount">${voted}<span style="font-size:32px" class="muted"> / ${canVote}</span></div>
         <p class="note">選択肢：${r.options.length}人から選ぶ</p>
+        <button class="btn ghost" id="hint" ${hintLeft ? "" : "disabled"}>${hintLeft ? `ヒントを出す（あと${hintLeft}つ）` : "ヒントはもうありません"}</button>
+        <p class="note">ヒントで見せた回答は、あとで問題として出しません。</p>
         <button class="btn" id="close">締め切って正解を発表</button>${abort}</div></div></div>`;
   }
   if (phase === "reveal" && r) {
@@ -181,7 +194,7 @@ function hostView() {
     const left = remaining();
     return `<div class="wrap"><div class="host-grid">
       <div class="stack">${badge("正解は…", `${qText(r)} → ${aText(r)}`, `<div class="badge-name hand write-in">${esc(namesOf(subjects))}</div>${subjects.length > 1 ? `<p class="muted">同じ回答の人が複数いたので、全員が正解です</p>` : ""}`)}
-        <div><h2 style="margin-bottom:10px">当てた人（${hits.length}人）</h2><div class="chips">${winners || `<p class="muted">だれも当てられませんでした</p>`}</div></div></div>
+        <div><h2 style="margin-bottom:10px">当てた人（${hits.length}人）</h2><div class="chips">${winners || `<p class="muted">だれも当てられませんでした</p>`}</div></div>${hintsHTML()}</div>
       <div class="panel stack"><h2>投票の内訳</h2><div class="bars">${bars}</div>
         <p class="note">残り ${left} 問</p>
         <button class="btn" id="next">${left ? "次の問題へ" : "終了する"}</button>${abort}</div></div></div>`;
@@ -223,10 +236,22 @@ async function nextRound() {
   const m = makeRound();
   if (!m) { await patchState({ phase: "done", round: null }); return; }
   const b = writeBatch(db);
-  b.set(secretRef(), { subjects: m.subjects, used: [...(secret?.used || []), ...m.keys] });
+  // 同じ回答の人が複数いても、ヒントはそのうち1人の回答から出す（全員正解なので、その人に投票しても正解になる）
+  const hintFrom = m.subjects[Math.floor(Math.random() * m.subjects.length)];
+  b.set(secretRef(), { subjects: m.subjects, used: [...(secret?.used || []), ...m.keys], hintFrom, hints: [] });
   m.subjects.forEach(id => b.set(doc(db, "turns", id), { round: m.round.id }));
   b.set(stateRef(), { ...baseState(), ...(state || {}), phase: "question", round: m.round, roundNo: (state?.roundNo || 0) + 1 });
   await b.commit();
+}
+// ヒント元の人の回答を1つ選んで見せ、出題済みにする。司会画面を複数開いていても上書きし合わないようトランザクションで追記する
+async function showHint() {
+  const cand = hintCandidates(); if (!cand.length) return;
+  const h = cand[Math.floor(Math.random() * cand.length)];
+  await runTransaction(db, async tx => {
+    const cur = (await tx.get(secretRef())).data() || {};
+    if (cur.hintFrom !== secret.hintFrom || (cur.used || []).includes(h.key)) return; // 問題が進んだか、別の画面で同じヒントを出した
+    tx.update(secretRef(), { hints: [...(cur.hints || []), { q: h.q, a: h.a }], used: [...(cur.used || []), h.key] });
+  });
 }
 async function reveal() {
   await patchState({ phase: "reveal", round: { ...state.round, subjects: secret.subjects } });
@@ -235,7 +260,7 @@ async function reveal() {
 async function abortGame() {
   if (!confirm("当てっこを中断して登録受付に戻ります。登録と回答は残り、次に始めると1問目からやり直します。よろしいですか？")) return;
   const b = writeBatch(db);
-  b.set(secretRef(), { subjects: [], used: [] });
+  b.set(secretRef(), { subjects: [], used: [], hintFrom: null, hints: [] });
   b.set(stateRef(), { ...baseState(), ...(state || {}), phase: "lobby", round: null, roundNo: 0 });
   await b.commit();
 }
@@ -249,7 +274,7 @@ async function resetAll() {
     const b = writeBatch(db); refs.slice(i, i + 400).forEach(r => b.delete(r)); await b.commit();
   }
   const b = writeBatch(db);
-  b.set(secretRef(), { subjects: [], used: [] });
+  b.set(secretRef(), { subjects: [], used: [], hintFrom: null, hints: [] });
   b.set(stateRef(), { phase: "lobby", perPerson: perPerson(), roundNo: 0, round: null });
   await b.commit();
 }
@@ -301,6 +326,7 @@ document.addEventListener("click", async e => {
   if (t.id === "close") return run(reveal);
   if (t.id === "toLobby") return run(() => patchState({ phase: "lobby", round: null }));
   if (t.id === "abort") return run(abortGame);
+  if (t.id === "hint") return run(showHint);
   if (t.id === "reset") return run(resetAll);
 });
 document.addEventListener("keydown", e => { if (e.key === "Enter" && e.target.id === "nick") document.getElementById("startAnswer")?.click(); });
