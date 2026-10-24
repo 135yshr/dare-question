@@ -1,6 +1,6 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, onAuthStateChanged, signInAnonymously, GoogleAuthProvider, signInWithPopup, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { getFirestore, doc, collection, onSnapshot, getDoc, setDoc, writeBatch } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { getFirestore, doc, collection, onSnapshot, getDoc, setDoc, writeBatch, runTransaction } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { firebaseConfig } from "./firebase-config.js";
 import { QUESTIONS } from "./questions.js";
 
@@ -134,11 +134,11 @@ function answerGroups() {
   return [...groups.values()];
 }
 const remaining = () => answerGroups().filter(g => !g.used).length;
-// ヒント候補：ヒント元の人の回答のうち、まだ出題もヒントもしていないもの
+// ヒント候補：ヒント元の人の回答のうち、まだ出題もヒントもしていないもの（同じ回答の人の分で使ったものも除く）
 function hintCandidates() {
   const from = secret?.hintFrom; if (!from || !players[from]) return [];
-  const used = new Set(secret?.used || []);
-  return (answers[from]?.answers || []).map((x, i) => ({ q: x.q, a: x.a, key: from + ":" + i })).filter(x => !used.has(x.key));
+  const usedGroups = new Set(answerGroups().filter(g => g.used).map(g => g.q + ":" + g.a));
+  return (answers[from]?.answers || []).map((x, i) => ({ q: x.q, a: x.a, key: from + ":" + i })).filter(x => !usedGroups.has(x.q + ":" + x.a));
 }
 function hintsHTML() {
   const hs = secret?.hints || []; if (!hs.length) return "";
@@ -243,11 +243,15 @@ async function nextRound() {
   b.set(stateRef(), { ...baseState(), ...(state || {}), phase: "question", round: m.round, roundNo: (state?.roundNo || 0) + 1 });
   await b.commit();
 }
-// ヒント元の人の回答を1つ選んで見せ、出題済みにする
+// ヒント元の人の回答を1つ選んで見せ、出題済みにする。司会画面を複数開いていても上書きし合わないようトランザクションで追記する
 async function showHint() {
   const cand = hintCandidates(); if (!cand.length) return;
   const h = cand[Math.floor(Math.random() * cand.length)];
-  await setDoc(secretRef(), { ...secret, hints: [...(secret.hints || []), { q: h.q, a: h.a }], used: [...(secret.used || []), h.key] });
+  await runTransaction(db, async tx => {
+    const cur = (await tx.get(secretRef())).data() || {};
+    if (cur.hintFrom !== secret.hintFrom || (cur.used || []).includes(h.key)) return; // 問題が進んだか、別の画面で同じヒントを出した
+    tx.update(secretRef(), { hints: [...(cur.hints || []), { q: h.q, a: h.a }], used: [...(cur.used || []), h.key] });
+  });
 }
 async function reveal() {
   await patchState({ phase: "reveal", round: { ...state.round, subjects: secret.subjects } });
