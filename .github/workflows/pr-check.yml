@@ -14,3 +14,15 @@ jobs:
         with:
           node-version: 24
       - run: for f in public/*.js; do node --check "$f"; done
+  # ルールはプレビューを作れないので、デプロイせずにコンパイルだけ確かめる。シークレットを使うのでフォークからの PR では動かさない
+  rules:
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: google-github-actions/auth@v3
+        with:
+          credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_DARE_QUESTION }}
+      - run: npx --yes firebase-tools@15.33.0 deploy --only firestore:rules --project dare-question --non-interactive --dry-run
