@@ -4,3 +4,8 @@ firebase-debug.*.log
 ui-debug.log
 firestore-debug.log
 .DS_Store
+
+# エージェント用のスキル（各自の環境で入れる）
+.agents/
+.claude/
+skills-lock.json
