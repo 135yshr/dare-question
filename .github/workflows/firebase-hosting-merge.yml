@@ -9,6 +9,10 @@ on:
       - main
 permissions:
   contents: read
+# 続けて push されても、ルールと Hosting のデプロイが前後の実行で入れ違わないよう 1 本ずつ動かす
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
 jobs:
   # アプリとルールはセットで変わるので、ルールを先にデプロイし、失敗したら Hosting も出さない
   deploy_rules:
