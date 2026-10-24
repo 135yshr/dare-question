@@ -1,0 +1,71 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function isSelf(uid) { return signedIn() && request.auth.uid == uid; }
+    // 司会：Google ログインし、admins/{メールアドレス} が存在するユーザー
+    function isHost() {
+      return signedIn()
+        && request.auth.token.email is string
+        && exists(/databases/$(database)/documents/admins/$(request.auth.token.email));
+    }
+    function gameState() { return get(/databases/$(database)/documents/game/state).data; }
+    function gameSecret() { return get(/databases/$(database)/documents/game/secret).data; }
+
+    // 司会の登録はコンソールから手動で行う
+    match /admins/{email} {
+      allow read: if signedIn() && request.auth.token.email == email;
+      allow write: if false;
+    }
+
+    // 進行状態は全員が読める。正解（だれの回答か）は game/secret にだけ置く
+    match /game/state {
+      allow read: if signedIn();
+      allow write: if isHost();
+    }
+    match /game/secret {
+      allow read, write: if isHost();
+    }
+
+    // ニックネームだけ公開
+    match /players/{uid} {
+      allow read: if signedIn();
+      allow create: if isSelf(uid)
+        && request.resource.data.keys().hasOnly(['nickname', 'joinedAt'])
+        && request.resource.data.nickname is string
+        && request.resource.data.nickname.size() > 0
+        && request.resource.data.nickname.size() <= 16;
+      allow delete: if isHost() || isSelf(uid);
+    }
+
+    // 回答は本人と司会だけが読める
+    match /answers/{uid} {
+      allow read: if isHost() || isSelf(uid);
+      allow create: if isSelf(uid)
+        && request.resource.data.keys().hasOnly(['answers'])
+        && request.resource.data.answers is list
+        && request.resource.data.answers.size() > 0
+        && request.resource.data.answers.size() <= 10;
+      allow delete: if isHost() || isSelf(uid);
+    }
+
+    // 「今回はあなたの回答」通知。本人と司会だけが読める
+    match /turns/{uid} {
+      allow read: if isHost() || isSelf(uid);
+      allow write: if isHost();
+    }
+
+    // 投票は本人と司会だけが読める。受付中の問題にだけ、出題された本人以外が投票できる
+    match /votes/{uid} {
+      allow read: if isHost() || isSelf(uid);
+      allow create, update: if isSelf(uid)
+        && request.resource.data.keys().hasOnly(['round', 'pick'])
+        && gameState().phase == 'question'
+        && request.resource.data.round == gameState().round.id
+        && request.resource.data.pick in gameState().round.options
+        && gameSecret().subject != uid;
+      allow delete: if isHost();
+    }
+  }
+}

@@ -1,0 +1,6 @@
+firebase-debug.log
+firebase-debug.*.log
+.firebase/
+ui-debug.log
+firestore-debug.log
+.DS_Store
