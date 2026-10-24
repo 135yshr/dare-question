@@ -147,6 +147,7 @@ function hostView() {
   const phase = state?.phase || "lobby";
   const r = state?.round;
   const reset = `<button class="btn danger" id="reset">全部リセット</button>`;
+  const abort = `<div class="row"><button class="btn ghost" id="abort" style="width:auto">中断して登録受付に戻る</button>${reset}</div>`;
 
   if (phase === "lobby") {
     const chips = ids.length ? ids.map(id => `<span class="chip hand">${esc(nameOf(id))}</span>`).join("") : `<p class="muted">まだだれも登録していません。</p>`;
@@ -167,7 +168,7 @@ function hostView() {
       ${badge("この回答、だれの？", `第${state.roundNo}問`, `<p class="host-q">${esc(qText(r))}</p><p class="host-a">${esc(aText(r))}</p>`)}
       <div class="panel stack"><p class="muted">投票</p><div class="bigcount">${voted}<span style="font-size:32px" class="muted"> / ${canVote}</span></div>
         <p class="note">選択肢：${r.options.length}人から選ぶ</p>
-        <button class="btn" id="close">締め切って正解を発表</button></div></div></div>`;
+        <button class="btn" id="close">締め切って正解を発表</button>${abort}</div></div></div>`;
   }
   if (phase === "reveal" && r) {
     const subjects = r.subjects || [];
@@ -183,7 +184,7 @@ function hostView() {
         <div><h2 style="margin-bottom:10px">当てた人（${hits.length}人）</h2><div class="chips">${winners || `<p class="muted">だれも当てられませんでした</p>`}</div></div></div>
       <div class="panel stack"><h2>投票の内訳</h2><div class="bars">${bars}</div>
         <p class="note">残り ${left} 問</p>
-        <button class="btn" id="next">${left ? "次の問題へ" : "終了する"}</button></div></div></div>`;
+        <button class="btn" id="next">${left ? "次の問題へ" : "終了する"}</button>${abort}</div></div></div>`;
   }
   if (phase === "done") {
     return `<div class="wrap"><div class="stack">${badge("おしまい", "全員の回答を出し切りました", `<p class="qtext">${state.roundNo || 0}問、おつかれさまでした</p>`)}
@@ -229,6 +230,14 @@ async function nextRound() {
 }
 async function reveal() {
   await patchState({ phase: "reveal", round: { ...state.round, subjects: secret.subjects } });
+}
+// 登録と回答は残し、出題済みの記録だけ消して受付に戻す。次に始めると1問目からやり直しになる
+async function abortGame() {
+  if (!confirm("当てっこを中断して登録受付に戻ります。登録と回答は残り、次に始めると1問目からやり直します。よろしいですか？")) return;
+  const b = writeBatch(db);
+  b.set(secretRef(), { subjects: [], used: [] });
+  b.set(stateRef(), { ...baseState(), ...(state || {}), phase: "lobby", round: null, roundNo: 0 });
+  await b.commit();
 }
 async function resetAll() {
   if (!confirm("登録者・回答・投票をすべて消して最初からにします。よろしいですか？")) return;
@@ -291,6 +300,7 @@ document.addEventListener("click", async e => {
   if (t.id === "begin" || t.id === "next") return run(nextRound);
   if (t.id === "close") return run(reveal);
   if (t.id === "toLobby") return run(() => patchState({ phase: "lobby", round: null }));
+  if (t.id === "abort") return run(abortGame);
   if (t.id === "reset") return run(resetAll);
 });
 document.addEventListener("keydown", e => { if (e.key === "Enter" && e.target.id === "nick") document.getElementById("startAnswer")?.click(); });
