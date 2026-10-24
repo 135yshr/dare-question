@@ -25,4 +25,5 @@ jobs:
       - uses: google-github-actions/auth@v3
         with:
           credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_DARE_QUESTION }}
+      - run: jq -r .client_email "$GOOGLE_APPLICATION_CREDENTIALS"  # TEMP: デプロイ用アカウントの特定
       - run: npx --yes firebase-tools@15.33.0 deploy --only firestore:rules --project dare-question --non-interactive --dry-run
