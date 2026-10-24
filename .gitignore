@@ -7,5 +7,8 @@ firestore-debug.log
 
 # エージェント用のスキル（各自の環境で入れる）
 .agents/
-.claude/
+# .claude/ は共有する設定（settings.json など）を置けるよう、手元専用のものだけ除外する
+.claude/skills/
+.claude/.cc-writes/
+.claude/settings.local.json
 skills-lock.json
